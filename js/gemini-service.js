@@ -11,9 +11,9 @@ const GeminiService = (() => {
     // CONFIGURATION
     // ========================================
     const MODELS = [
-        { id: 'gemini-3-flash-preview', name: 'Gemini 3 Flash Preview', desc: 'Nhanh, mô hình mới nhất', badge: 'Default' },
-        { id: 'gemini-3-pro-preview', name: 'Gemini 3 Pro Preview', desc: 'Chính xác cao, logic tốt', badge: 'Pro' },
-        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', desc: 'Nhanh, ổn định, tiết kiệm', badge: 'Backup' }
+        { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash', desc: 'Nhanh, tiết kiệm quota', badge: 'Default' },
+        { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', desc: 'Chính xác hơn, tốn quota', badge: 'Pro' },
+        { id: 'gemini-2.0-flash', name: 'Gemini 2.0 Flash', desc: 'Dự phòng, ổn định', badge: 'Backup' }
     ];
 
     const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
