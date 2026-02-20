@@ -360,6 +360,8 @@
         $('#statsGrid').classList.remove('active');
         $('#alertContainer').innerHTML = '';
 
+        const globalStartTime = Date.now();
+
         try {
             let rawText = '';
             let result;
@@ -407,6 +409,15 @@
                 }
             } else {
                 lastProcessedText = rawText;
+            }
+
+            // Calculate exact total processing time
+            const totalMs = Date.now() - globalStartTime;
+            if (Array.isArray(lastResults)) {
+                const msPerFile = totalMs / lastResults.length;
+                lastResults.forEach(r => r.processingTime = msPerFile);
+            } else {
+                if (lastResults) lastResults.processingTime = totalMs;
             }
 
             // Display results

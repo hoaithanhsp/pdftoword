@@ -163,25 +163,39 @@ const GeminiService = (() => {
             return rawText;
         }
 
-        if (onProgress) onProgress(10, 'Đang gửi text tới Gemini AI...');
+        if (onProgress) onProgress(10, 'Đang chuẩn bị dữ liệu gửi tới Gemini AI...');
 
-        // Split text into chunks if too long (max ~4000 chars per chunk to avoid token limits)
-        const MAX_CHUNK = 4000;
+        // Tăng giới hạn chunk (từ 4000 lên 15000 ký tự) để giảm số lần gọi API (Gemini xử lý được ngữ cảnh dài)
+        const MAX_CHUNK = 15000;
         const chunks = splitIntoChunks(rawText, MAX_CHUNK);
-        let processedTexts = [];
+        let processedTexts = new Array(chunks.length);
 
-        for (let i = 0; i < chunks.length; i++) {
-            if (onProgress) {
-                const pct = 10 + Math.round((i / chunks.length) * 80);
-                onProgress(pct, `Gemini AI đang xử lý phần ${i + 1}/${chunks.length}...`);
-            }
+        let completedChunks = 0;
 
-            const prompt = buildMathPrompt(chunks[i]);
-            const result = await callGemini(prompt, { temperature: 0.1 });
+        // Xử lý song song với concurrency = 3 để chạy nhanh gấp 3 lần nhưng không bị dính giới hạn (Rate Limit) của gói API Free (15 RPM)
+        const CONCURRENCY = 3;
 
-            // Clean response (remove markdown code blocks if Gemini wraps them)
-            const cleaned = cleanGeminiResponse(result);
-            processedTexts.push(cleaned);
+        for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+            const batch = chunks.slice(i, i + CONCURRENCY);
+
+            const promises = batch.map(async (chunk, batchIndex) => {
+                const globalIndex = i + batchIndex;
+                const prompt = buildMathPrompt(chunk);
+                const result = await callGemini(prompt, { temperature: 0.1 });
+
+                // Clean response (remove markdown code blocks if Gemini wraps them)
+                const cleaned = cleanGeminiResponse(result);
+                processedTexts[globalIndex] = cleaned;
+
+                completedChunks++;
+                if (onProgress) {
+                    const pct = 10 + Math.round((completedChunks / chunks.length) * 80);
+                    onProgress(pct, `Gemini AI đã xử lý xong phần ${completedChunks}/${chunks.length}...`);
+                }
+            });
+
+            // Chờ batch xử lý xong trước khi chuyển sang batch tiếp theo để không chặn luồng API
+            await Promise.all(promises);
         }
 
         if (onProgress) onProgress(95, 'Hoàn tất xử lý công thức toán!');
