@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF to Word Converter - Chuyển đổi PDF sang Word miễn phí</title>
+    <meta name="description"
+        content="Công cụ chuyển đổi PDF sang Word trực tuyến miễn phí. Hỗ trợ OCR tiếng Việt, AI xử lý công thức toán, xuất file .docx chất lượng cao.">
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap"
+        rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
+    <!-- KaTeX CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" rel="stylesheet">
+    <!-- App CSS -->
+    <link href="css/style.css" rel="stylesheet">
+</head>
+
+<body>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">
+            Đang xử lý tài liệu...<br>
+            <small>Quá trình này có thể mất 30-60 giây</small>
+        </div>
+    </div>
+
+    <!-- ========================================
+         API KEY MODAL
+         ======================================== -->
+    <div class="modal-overlay" id="apiKeyModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span class="modal-icon">🔑</span>
+                <h2>Thiết lập API Key</h2>
+                <p>Nhập Gemini API Key để sử dụng tính năng AI xử lý công thức toán</p>
+            </div>
+
+            <div class="modal-body">
+                <!-- API Key Input -->
+                <div class="input-group">
+                    <label for="apiKeyInput"><i class="fas fa-key"></i> Gemini API Key</label>
+                    <div class="input-with-btn">
+                        <input type="password" id="apiKeyInput" placeholder="AIzaSy..." autocomplete="off">
+                        <button class="btn-icon" id="toggleKeyVisibility" title="Hiển thị/Ẩn key">
+                            <i class="fas fa-eye"></i>
+                        </button>
+                    </div>
+                    <div class="input-hint">
+                        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">
+                            <i class="fas fa-external-link-alt"></i> Lấy API key miễn phí tại Google AI Studio
+                        </a>
+                    </div>
+                </div>
+
+                <!-- Model Selection -->
+                <div class="model-selector">
+                    <label><i class="fas fa-robot"></i> Chọn Model AI</label>
+                    <div class="model-cards" id="modelCards">
+                        <!-- Rendered by JS -->
+                    </div>
+                </div>
+
+                <!-- Validation Status -->
+                <div class="validation-status hidden" id="validationStatus">
+                    <i class="fas fa-spinner fa-spin"></i> <span>Đang kiểm tra...</span>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button class="btn btn-outline btn-sm" id="skipApiKeyBtn">
+                    <i class="fas fa-forward"></i> Bỏ qua (không dùng AI)
+                </button>
+                <button class="btn btn-primary btn-sm" id="saveApiKeyBtn">
+                    <i class="fas fa-check"></i> Lưu & Tiếp tục
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================
+         MAIN APP
+         ======================================== -->
+    <div class="app-container">
+
+        <!-- Header -->
+        <header class="header fade-in">
+            <div class="header-content">
+                <!-- Settings Button (top-right of header) -->
+                <button class="header-settings-btn" id="openSettingsBtn" title="Cài đặt API Key">
+                    <i class="fas fa-cog"></i>
+                    <span class="settings-label" id="settingsLabel">Cài đặt API Key</span>
+                </button>
+
+                <span class="header-icon">📄➡️📝</span>
+                <h1>PDF to Word Converter</h1>
+                <p>Chuyển đổi PDF sang Word (.docx) — AI xử lý công thức toán học</p>
+                <p style="font-size: 0.85rem; margin-top: 8px; opacity: 0.9; font-weight: 600;">
+                    👨‍🏫 Phát triển bởi thầy Trần Hoài Thanh - 0348296773
+                </p>
+
+                <!-- API Key Warning -->
+                <div class="api-warning hidden" id="apiWarning">
+                    <i class="fas fa-exclamation-triangle"></i>
+                    <span>Chưa có API key — <a href="#" id="openModalLink">Nhập key để dùng AI</a></span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Features -->
+        <div class="features-grid fade-in">
+            <div class="feature-card stagger-1">
+                <span class="icon">⚡</span>
+                <h3>Xử lý nhanh</h3>
+                <p>Trích xuất text tức thì từ PDF có sẵn text</p>
+            </div>
+            <div class="feature-card stagger-2">
+                <span class="icon">🧮</span>
+                <h3>AI Toán học</h3>
+                <p>Gemini AI sửa lỗi & render công thức LaTeX</p>
+            </div>
+            <div class="feature-card stagger-3">
+                <span class="icon">📦</span>
+                <h3>Xuất Word</h3>
+                <p>Tạo file .docx giữ cấu trúc đoạn văn</p>
+            </div>
+        </div>
+
+        <!-- Upload Card -->
+        <div class="card fade-in">
+            <div class="card-header">
+                <div class="icon"><i class="fas fa-cloud-upload-alt"></i></div>
+                <h2>Tải lên file PDF</h2>
+            </div>
+
+            <!-- Upload Zone -->
+            <div class="upload-zone" id="uploadZone">
+                <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                <div class="upload-text">Kéo thả file PDF vào đây</div>
+                <div class="upload-subtext">hoặc nhấn để chọn file • Hỗ trợ PDF (tối đa 50MB)</div>
+            </div>
+            <input type="file" id="fileInput" accept=".pdf,application/pdf" multiple style="display:none">
+
+            <!-- File Preview -->
+            <div id="filePreviewContainer"></div>
+
+            <!-- Options -->
+            <div class="options-row">
+                <div class="option-group">
+                    <label><i class="fas fa-language"></i> Ngôn ngữ OCR</label>
+                    <select id="languageSelect">
+                        <option value="vie+eng">Tiếng Việt + Anh</option>
+                        <option value="vie">Tiếng Việt</option>
+                        <option value="eng">Tiếng Anh</option>
+                        <option value="jpn">Tiếng Nhật</option>
+                        <option value="kor">Tiếng Hàn</option>
+                        <option value="chi_sim">Tiếng Trung (Giản thể)</option>
+                    </select>
+                </div>
+                <div class="option-group">
+                    <div class="toggle-option" style="margin-top: 22px;">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="ocrToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label">Bắt buộc OCR</span>
+                    </div>
+                </div>
+                <div class="option-group">
+                    <div class="toggle-option" style="margin-top: 22px;">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="aiMathToggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label">🤖 AI sửa công thức</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="options-row">
+                <div class="option-group">
+                    <div class="toggle-option">
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="batchToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <span class="toggle-label">Chế độ batch</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Process Button -->
+            <button class="btn btn-primary btn-full" id="processBtn" disabled>
+                <i class="fas fa-magic"></i> Chọn file PDF trước
+            </button>
+
+            <!-- Progress -->
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-header">
+                    <span class="progress-label">Đang xử lý...</span>
+                    <span class="progress-percent" id="progressPercent">0%</span>
+                </div>
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-status" id="progressStatus">Chuẩn bị...</div>
+            </div>
+
+            <!-- Alert Container -->
+            <div id="alertContainer"></div>
+        </div>
+
+        <!-- Results Card -->
+        <div class="card fade-in results-section" id="resultsSection">
+            <div class="card-header">
+                <div class="icon"><i class="fas fa-file-alt"></i></div>
+                <h2>Kết quả chuyển đổi</h2>
+            </div>
+
+            <!-- Stats -->
+            <div class="stats-grid" id="statsGrid">
+                <div class="stat-card">
+                    <div class="stat-value" id="pageCount">0</div>
+                    <div class="stat-label">Số trang</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="confidence">0%</div>
+                    <div class="stat-label">Độ chính xác</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="processingTime">0s</div>
+                    <div class="stat-label">Thời gian</div>
+                </div>
+            </div>
+
+            <!-- View Toggle -->
+            <div class="view-toggle" id="viewToggle" style="display:none;">
+                <button class="view-btn active" data-view="rendered" id="viewRenderedBtn">
+                    <i class="fas fa-eye"></i> Xem render
+                </button>
+                <button class="view-btn" data-view="raw" id="viewRawBtn">
+                    <i class="fas fa-code"></i> Text gốc
+                </button>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="btn-group" style="margin-bottom: 20px;">
+                <button class="btn btn-outline btn-sm" id="copyBtn">
+                    <i class="fas fa-copy"></i> Sao chép
+                </button>
+                <button class="btn btn-outline btn-sm" id="downloadTxtBtn">
+                    <i class="fas fa-download"></i> Tải TXT
+                </button>
+                <button class="btn btn-primary btn-sm" id="exportWordBtn">
+                    <i class="fas fa-file-word"></i> Xuất Word (.docx)
+                </button>
+            </div>
+
+            <!-- Rendered Result (with KaTeX) -->
+            <div class="result-rendered" id="resultsRendered" style="display:none;"></div>
+
+            <!-- Raw Result Text -->
+            <div class="result-container" id="resultsText">
+                <div class="result-placeholder">
+                    <i class="fas fa-file-alt"></i>
+                    <p>Kết quả sẽ hiển thị ở đây...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer fade-in">
+            <p>🛡️ Mọi xử lý diễn ra trên trình duyệt — Dữ liệu không được upload lên server</p>
+            <p style="margin-top: 8px; font-size: 0.78rem; color: #9ca3af;">
+                Powered by PDF.js • Tesseract.js • Gemini AI • KaTeX • docx
+            </p>
+        </footer>
+
+    </div>
+
+    <!-- ========================================
+         LIBRARIES (CDN)
+         ======================================== -->
+
+    <!-- PDF.js -->
+    <script>
+        (async () => {
+            const pdfjsModule = await import('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.min.mjs');
+            window.pdfjsLib = pdfjsModule;
+            pdfjsModule.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.9.155/pdf.worker.min.mjs';
+            console.log('✅ PDF.js loaded');
+        })();
+    </script>
+
+    <!-- Tesseract.js -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+
+    <!-- docx library -->
+    <script src="https://cdn.jsdelivr.net/npm/docx@9.0.2/build/index.umd.min.js"></script>
+
+    <!-- FileSaver.js -->
+    <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
+
+    <!-- KaTeX JS + Auto-render -->
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+    <!-- App Scripts -->
+    <script src="js/gemini-service.js"></script>
+    <script src="js/pdf-processor.js"></script>
+    <script src="js/word-exporter.js"></script>
+    <script src="js/app.js"></script>
+
+</body>
+
+</html>
