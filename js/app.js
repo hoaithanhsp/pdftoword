@@ -361,6 +361,7 @@
         const language = $('#languageSelect')?.value || 'vie+eng';
         const forceOcr = $('#ocrToggle')?.checked || false;
         const useAiMath = $('#aiMathToggle')?.checked || false;
+        const keepImages = $('#keepImagesToggle')?.checked ?? true;
         const options = { language, forceOcr };
 
         const progressContainer = $('#progressContainer');
@@ -377,49 +378,64 @@
             let rawText = '';
             let result;
 
-            // Phase 1: Extract text from PDF
+            // ── Phase 1: Extract text ──────────────────────────
             if (selectedFiles.length === 1) {
                 result = await PdfProcessor.autoProcess(selectedFiles[0], options, (pct, msg) => {
-                    const adjustedPct = useAiMath ? Math.round(pct * 0.5) : pct;
-                    updateProgress(adjustedPct, msg || 'Đang trích xuất text...');
+                    const max = (keepImages || useAiMath) ? 40 : 100;
+                    updateProgress(Math.round(pct * max / 100), msg || 'Đang trích xuất text...');
                 });
                 lastResults = result;
                 rawText = result.text || '';
             } else {
                 const results = await PdfProcessor.processBatch(selectedFiles, options, (fileIdx, total, pct, msg) => {
                     const overallPct = Math.round(((fileIdx + pct / 100) / total) * 100);
-                    const adjustedPct = useAiMath ? Math.round(overallPct * 0.5) : overallPct;
-                    updateProgress(adjustedPct, msg || `File ${fileIdx + 1}/${total}...`);
+                    const max = useAiMath ? 40 : 100;
+                    updateProgress(Math.round(overallPct * max / 100), msg || `File ${fileIdx + 1}/${total}...`);
                 });
                 lastResults = results;
-                rawText = results.map(r => r.text || '').join('\n\n========\n\n');
-            }
-
-            // Image Extraction Phase
-            extractedImages = [];
-            const keepImages = $('#keepImagesToggle')?.checked ?? true;
-            if (keepImages && selectedFiles.length === 1) {
-                updateProgress(45, '🖼️ Đang trích xuất hình ảnh từ PDF...');
-                try {
-                    const pdfData = await selectedFiles[0].arrayBuffer();
-                    extractedImages = await PdfImageExtractor.extractPageImages(pdfData, {
-                        scale: 2.0,
-                        minAreaRatio: 0.015
-                    });
-
-                    // Inject placeholders into rawText
-                    if (extractedImages.length > 0) {
-                        rawText = injectImagePlaceholders(rawText, extractedImages);
-                        showAlert(`🖼️ Phát hiện ${extractedImages.length} hình ảnh/đồ thị`, 'info');
-                    }
-                } catch (imgErr) {
-                    console.warn('Image extraction failed:', imgErr);
-                }
+                rawText = results.map(r => r.text || '').join('\n\n====\n\n');
             }
 
             lastRawText = rawText;
 
-            // Phase 2: AI Math Processing (if enabled & has API key)
+            // ── Phase 2: Extract images ────────────────────────
+            extractedImages = []; // Reset images for each run
+            if (keepImages && selectedFiles.length === 1) {
+                updateProgress(42, '🖼️ Đang phát hiện và cắt hình ảnh...');
+                try {
+                    extractedImages = await PdfProcessor.extractImages(
+                        selectedFiles[0],
+                        {
+                            scale: 2.5,
+                            gridSize: 6,
+                            minWidthPx: 60,
+                            minHeightPx: 40,
+                            minAreaRatio: 0.008,
+                            paddingPx: 12,
+                            whiteThreshold: 238
+                        },
+                        (pct, msg) => {
+                            updateProgress(42 + Math.round(pct * 0.08), msg);
+                        }
+                    );
+
+                    if (extractedImages.length > 0) {
+                        rawText = injectImagePlaceholders(rawText, extractedImages);
+                        lastRawText = rawText;
+                        showAlert(
+                            `🖼️ Phát hiện ${extractedImages.length} hình ảnh/đồ thị — sẽ được nhúng vào Word`,
+                            'info'
+                        );
+                    } else {
+                        showAlert('ℹ️ Không phát hiện hình ảnh trong PDF này', 'info');
+                    }
+                } catch (imgErr) {
+                    console.warn('Image extraction error:', imgErr);
+                    showAlert('⚠️ Không thể trích xuất hình ảnh: ' + imgErr.message, 'warning');
+                }
+            }
+
+            // ── Phase 3: AI Math Processing ────────────────────
             if (useAiMath && GeminiService.hasApiKey() && rawText.trim().length > 0) {
                 updateProgress(55, '🤖 Gemini AI đang xử lý công thức toán...');
 
@@ -478,25 +494,33 @@
 
     // Helper: inject image placeholders into text by page
     function injectImagePlaceholders(text, images) {
-        // Group images by page
+        if (!images || images.length === 0) return text;
+
+        // Group by page
         const byPage = {};
-        images.forEach(img => {
+        for (const img of images) {
             if (!byPage[img.pageNum]) byPage[img.pageNum] = [];
             byPage[img.pageNum].push(img);
-        });
+        }
 
-        // Insert placeholders after page separator markers
         let result = text;
-        Object.entries(byPage).forEach(([pageNum, imgs]) => {
-            const pageSep = new RegExp(`(---\\s*Trang\\s*${pageNum}[^\\n]*)`, 'i');
+
+        for (const [pageNum, imgs] of Object.entries(byPage)) {
             const placeholders = imgs.map(img => img.placeholder).join('\n');
-            if (pageSep.test(result)) {
-                result = result.replace(pageSep, `$1\n${placeholders}`);
-            } else {
-                // Append at end if no separator found
-                result += `\n${placeholders}`;
+            const pageSepRegex = new RegExp(
+                `(---\\s*Trang\\s*${pageNum}\\s*---[^\\n]*)`,
+                'i'
+            );
+
+            if (pageSepRegex.test(result)) {
+                // Chèn sau dòng separator của trang
+                result = result.replace(pageSepRegex, `$1\n${placeholders}`);
+            } else if (parseInt(pageNum) === 1) {
+                // Trang 1 không có separator → chèn vào đầu
+                result = placeholders + '\n\n' + result;
             }
-        });
+        }
+
         return result;
     }
 

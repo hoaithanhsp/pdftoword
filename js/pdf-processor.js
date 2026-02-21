@@ -30,6 +30,358 @@ const PdfProcessor = (() => {
         });
     }
 
+    // ====================================================
+    // IMAGE EXTRACTION ENGINE (CORE - NEW)
+    // ====================================================
+
+    /**
+     * Render một trang PDF ra canvas và trả về canvas + page object
+     */
+    async function renderPageToCanvas(page, scale = 2.0) {
+        const viewport = page.getViewport({ scale });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        return { canvas, viewport, ctx };
+    }
+
+    /**
+     * Lấy bounding boxes của tất cả text items trên trang
+     * Trả về mảng { x, y, w, h } theo tọa độ canvas (đã scale)
+     */
+    function getTextBoxes(textContent, viewport) {
+        const boxes = [];
+        for (const item of textContent.items) {
+            if (!item.str || !item.str.trim()) continue;
+            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+            // tx[4] = x, tx[5] = y (bottom-left của text)
+            const x = tx[4];
+            const y = tx[5] - Math.abs(item.height * viewport.scale);
+            const w = Math.abs(item.width * viewport.scale);
+            const h = Math.abs(item.height * viewport.scale) + 4;
+            if (w > 0 && h > 0) {
+                boxes.push({ x: x - 2, y: y - 2, w: w + 4, h: h + 4 });
+            }
+        }
+        return boxes;
+    }
+
+    /**
+     * Kiểm tra pixel có phải "nền trắng/sáng" không
+     */
+    function isWhitePixel(r, g, b, threshold = 245) {
+        return r >= threshold && g >= threshold && b >= threshold;
+    }
+
+    /**
+     * Kiểm tra một ô grid có nằm trong vùng text không
+     */
+    function isCoveredByText(cx, cy, cw, ch, textBoxes) {
+        for (const box of textBoxes) {
+            // Overlap check
+            if (cx < box.x + box.w && cx + cw > box.x &&
+                cy < box.y + box.h && cy + ch > box.y) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * CORE: Phát hiện vùng hình ảnh trên canvas bằng cách:
+     * 1. Tạo grid mask
+     * 2. Đánh dấu ô có pixel không trắng và không phải text
+     * 3. Flood fill để gom các ô liền kề thành region
+     * 4. Lọc region đủ lớn
+     */
+    function detectImageRegions(canvas, textBoxes, options = {}) {
+        const {
+            gridSize = 6,           // pixels per grid cell
+            minWidthPx = 60,        // min width của region (pixels)
+            minHeightPx = 40,       // min height của region (pixels)
+            minAreaRatio = 0.008,   // min area so với toàn trang
+            paddingPx = 10,         // padding quanh region khi crop
+            whiteThreshold = 240    // ngưỡng màu trắng
+        } = options;
+
+        const W = canvas.width;
+        const H = canvas.height;
+        const minArea = W * H * minAreaRatio;
+
+        const ctx = canvas.getContext('2d');
+        const imageData = ctx.getImageData(0, 0, W, H);
+        const pixels = imageData.data; // RGBA flat array
+
+        const cols = Math.ceil(W / gridSize);
+        const rows = Math.ceil(H / gridSize);
+
+        // Bước 1: Tạo content mask
+        // contentMask[r*cols+c] = 1 nếu ô có nội dung (không trắng, không text)
+        const contentMask = new Uint8Array(cols * rows);
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                const cellX = c * gridSize;
+                const cellY = r * gridSize;
+                const cellW = Math.min(gridSize, W - cellX);
+                const cellH = Math.min(gridSize, H - cellY);
+
+                // Bỏ qua ô bị text che
+                if (isCoveredByText(cellX, cellY, cellW, cellH, textBoxes)) continue;
+
+                // Kiểm tra nhiều pixel trong ô (không chỉ center)
+                let nonWhiteCount = 0;
+                const sampleStep = Math.max(1, Math.floor(gridSize / 3));
+                for (let dy = 0; dy < cellH; dy += sampleStep) {
+                    for (let dx = 0; dx < cellW; dx += sampleStep) {
+                        const px = cellX + dx;
+                        const py = cellY + dy;
+                        if (px >= W || py >= H) continue;
+                        const idx = (py * W + px) * 4;
+                        const R = pixels[idx], G = pixels[idx + 1], B = pixels[idx + 2], A = pixels[idx + 3];
+                        if (A < 10) continue; // transparent → bỏ qua
+                        if (!isWhitePixel(R, G, B, whiteThreshold)) {
+                            nonWhiteCount++;
+                        }
+                    }
+                }
+
+                // Ô có ít nhất 20% pixel không trắng → đánh dấu là content
+                const totalSamples = Math.ceil(cellH / sampleStep) * Math.ceil(cellW / sampleStep);
+                if (nonWhiteCount / totalSamples >= 0.2) {
+                    contentMask[r * cols + c] = 1;
+                }
+            }
+        }
+
+        // Bước 2: Flood fill để gom các ô liền kề
+        const visited = new Uint8Array(cols * rows);
+        const regions = [];
+
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+                if (!contentMask[r * cols + c] || visited[r * cols + c]) continue;
+
+                // BFS
+                const queue = [[r, c]];
+                visited[r * cols + c] = 1;
+                let minR = r, maxR = r, minC = c, maxC = c;
+                let cellCount = 0;
+
+                while (queue.length > 0) {
+                    const [cr, cc] = queue.shift();
+                    cellCount++;
+                    if (cr < minR) minR = cr;
+                    if (cr > maxR) maxR = cr;
+                    if (cc < minC) minC = cc;
+                    if (cc > maxC) maxC = cc;
+
+                    // 8-directional neighbors (bắt được đường chéo)
+                    for (let dr = -1; dr <= 1; dr++) {
+                        for (let dc = -1; dc <= 1; dc++) {
+                            if (dr === 0 && dc === 0) continue;
+                            const nr = cr + dr, nc = cc + dc;
+                            if (nr >= 0 && nr < rows && nc >= 0 && nc < cols
+                                && contentMask[nr * cols + nc]
+                                && !visited[nr * cols + nc]) {
+                                visited[nr * cols + nc] = 1;
+                                queue.push([nr, nc]);
+                            }
+                        }
+                    }
+                }
+
+                // Tính bounding box thực (pixels)
+                const rx = Math.max(0, minC * gridSize - paddingPx);
+                const ry = Math.max(0, minR * gridSize - paddingPx);
+                const rw = Math.min(W - rx, (maxC - minC + 1) * gridSize + paddingPx * 2);
+                const rh = Math.min(H - ry, (maxR - minR + 1) * gridSize + paddingPx * 2);
+                const area = cellCount * gridSize * gridSize;
+
+                // Lọc region đủ lớn
+                if (area >= minArea && rw >= minWidthPx && rh >= minHeightPx) {
+                    regions.push({ x: rx, y: ry, width: rw, height: rh });
+                }
+            }
+        }
+
+        // Bước 3: Merge các region chồng lấp hoặc quá gần nhau
+        return mergeOverlappingRegions(regions, paddingPx * 2);
+    }
+
+    /**
+     * Merge các region chồng lấp hoặc gần nhau
+     */
+    function mergeOverlappingRegions(regions, gap = 20) {
+        if (regions.length === 0) return [];
+
+        let merged = [...regions];
+        let changed = true;
+
+        while (changed) {
+            changed = false;
+            const result = [];
+            const used = new Array(merged.length).fill(false);
+
+            for (let i = 0; i < merged.length; i++) {
+                if (used[i]) continue;
+                let a = merged[i];
+
+                for (let j = i + 1; j < merged.length; j++) {
+                    if (used[j]) continue;
+                    const b = merged[j];
+
+                    // Kiểm tra overlap hoặc gần nhau (trong khoảng gap)
+                    const overlapX = a.x < b.x + b.width + gap && a.x + a.width + gap > b.x;
+                    const overlapY = a.y < b.y + b.height + gap && a.y + a.height + gap > b.y;
+
+                    if (overlapX && overlapY) {
+                        // Merge thành bounding box lớn hơn
+                        const nx = Math.min(a.x, b.x);
+                        const ny = Math.min(a.y, b.y);
+                        const nw = Math.max(a.x + a.width, b.x + b.width) - nx;
+                        const nh = Math.max(a.y + a.height, b.y + b.height) - ny;
+                        a = { x: nx, y: ny, width: nw, height: nh };
+                        used[j] = true;
+                        changed = true;
+                    }
+                }
+
+                result.push(a);
+            }
+            merged = result;
+        }
+
+        return merged;
+    }
+
+    /**
+     * Crop một vùng từ canvas và trả về PNG Blob
+     */
+    function cropCanvasRegion(canvas, { x, y, width, height }) {
+        return new Promise((resolve) => {
+            const offscreen = document.createElement('canvas');
+            offscreen.width = Math.max(1, width);
+            offscreen.height = Math.max(1, height);
+            const ctx = offscreen.getContext('2d');
+            ctx.drawImage(canvas, x, y, width, height, 0, 0, width, height);
+            offscreen.toBlob(blob => resolve(blob), 'image/png', 0.95);
+        });
+    }
+
+    /**
+     * Convert Blob → ArrayBuffer (dùng cho docx ImageRun)
+     */
+    function blobToArrayBuffer(blob) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(e.target.result);
+            reader.onerror = reject;
+            reader.readAsArrayBuffer(blob);
+        });
+    }
+
+    /**
+     * Extract tất cả hình ảnh từ PDF
+     * @param {File|ArrayBuffer} fileOrBuffer
+     * @param {Object} options
+     * @param {Function} onProgress
+     * @returns {Array} [{ pageNum, id, placeholder, blob, arrayBuffer, wordWidth, wordHeight, x, y }]
+     */
+    async function extractImages(fileOrBuffer, options = {}, onProgress = null) {
+        initPdfJs();
+
+        const {
+            scale = 2.5,
+            gridSize = 6,
+            minWidthPx = 60,
+            minHeightPx = 40,
+            minAreaRatio = 0.008,
+            paddingPx = 12,
+            whiteThreshold = 238
+        } = options;
+
+        const arrayBuffer = fileOrBuffer instanceof ArrayBuffer
+            ? fileOrBuffer
+            : await readFileAsArrayBuffer(fileOrBuffer);
+
+        // Clone buffer vì PDF.js sẽ detach nó
+        const pdfData = arrayBuffer.slice(0);
+        const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+        const pageCount = pdf.numPages;
+        const allImages = [];
+        let globalId = 0;
+
+        for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+            if (onProgress) {
+                onProgress(
+                    Math.round((pageNum / pageCount) * 100),
+                    `Đang phân tích hình ảnh trang ${pageNum}/${pageCount}...`
+                );
+            }
+
+            try {
+                const page = await pdf.getPage(pageNum);
+
+                // Render trang ra canvas
+                const { canvas, viewport } = await renderPageToCanvas(page, scale);
+
+                // Lấy text boxes để loại trừ
+                const textContent = await page.getTextContent();
+                const textBoxes = getTextBoxes(textContent, viewport);
+
+                // Phát hiện vùng ảnh
+                const regions = detectImageRegions(canvas, textBoxes, {
+                    gridSize,
+                    minWidthPx,
+                    minHeightPx,
+                    minAreaRatio,
+                    paddingPx,
+                    whiteThreshold
+                });
+
+                // Crop từng region
+                for (const region of regions) {
+                    const blob = await cropCanvasRegion(canvas, region);
+                    if (!blob || blob.size < 500) continue; // bỏ qua blob quá nhỏ
+
+                    const buffer = await blobToArrayBuffer(blob);
+                    globalId++;
+
+                    // Kích thước thực tế trong Word (pt) — chia scale để về kích thước gốc
+                    const wordWidth = Math.round(region.width / scale);
+                    const wordHeight = Math.round(region.height / scale);
+
+                    allImages.push({
+                        pageNum,
+                        id: globalId,
+                        placeholder: `[IMAGE_P${pageNum}_${globalId}]`,
+                        blob,
+                        arrayBuffer: buffer,
+                        // Kích thước cho Word (pixels → EMU: 1px ≈ 9525 EMU, nhưng docx.js dùng px)
+                        wordWidth: Math.min(wordWidth, 550),
+                        wordHeight: Math.min(wordHeight, 700),
+                        // Tọa độ gốc trên canvas (để debug)
+                        canvasX: region.x,
+                        canvasY: region.y,
+                        canvasWidth: region.width,
+                        canvasHeight: region.height
+                    });
+                }
+
+                console.log(`📄 Trang ${pageNum}: phát hiện ${regions.length} vùng ảnh`);
+
+            } catch (err) {
+                console.warn(`⚠️ Lỗi extract ảnh trang ${pageNum}:`, err);
+            }
+        }
+
+        console.log(`✅ Tổng cộng: ${allImages.length} hình ảnh từ ${pageCount} trang`);
+        return allImages;
+    }
+
     /**
      * Trích xuất text từ PDF dùng PDF.js
      * @param {File} file - File PDF
@@ -269,6 +621,8 @@ const PdfProcessor = (() => {
         ocrProcess,
         autoProcess,
         processBatch,
+        extractImages,
+        blobToArrayBuffer,
         formatFileSize
     };
 })();

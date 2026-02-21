@@ -440,26 +440,18 @@ const WordExporter = (() => {
 
     /**
      * Export to Word WITH embedded images
-     * @param {string} content - Text with $...$ LaTeX + [IMAGE_PAGEx_y] placeholders
-     * @param {Array} pageImages - Array from PdfImageExtractor.extractPageImages()
+     * @param {string} content - Text with $...$ LaTeX + [IMAGE_Px_y] placeholders
+     * @param {Array} images - Array from PdfProcessor.extractImages()
      * @param {string} fileName
      * @param {Object} options
      */
-    async function exportToWordWithImages(content, pageImages = [], fileName = 'converted', options = {}) {
+    async function exportToWordWithImages(content, images = [], fileName = 'converted', options = {}) {
         const { fontSize = 24, fontName = 'Times New Roman' } = options;
 
-        // Pre-convert all image blobs to ArrayBuffer
+        // Build lookup map: placeholder → image data
         const imageMap = {};
-        for (const img of pageImages) {
-            try {
-                imageMap[img.placeholder] = {
-                    data: await PdfImageExtractor.blobToArrayBuffer(img.imageBlob),
-                    width: Math.min(img.width / 2, 600),   // scale down for Word (px → pt approx)
-                    height: Math.min(img.height / 2, 400)
-                };
-            } catch (e) {
-                console.warn('Failed to convert image:', img.placeholder, e);
-            }
+        for (const img of images) {
+            imageMap[img.placeholder] = img;
         }
 
         const children = [];
@@ -496,26 +488,34 @@ const WordExporter = (() => {
             }
 
             // Check for image placeholder
-            const imagePlaceholderMatch = line.match(/\[IMAGE_PAGE\d+_\d+\]/);
+            const imagePlaceholderMatch = line.match(/^\[IMAGE_P(\d+)_(\d+)\]$/);
             if (imagePlaceholderMatch) {
                 const placeholder = imagePlaceholderMatch[0];
-                const imgData = imageMap[placeholder];
-                if (imgData) {
-                    children.push(
-                        new docx.Paragraph({
-                            children: [
-                                new docx.ImageRun({
-                                    data: imgData.data,
-                                    transformation: {
-                                        width: imgData.width,
-                                        height: imgData.height
-                                    }
-                                })
-                            ],
-                            alignment: docx.AlignmentType.CENTER,
-                            spacing: { before: 200, after: 200 }
-                        })
-                    );
+                const img = imageMap[placeholder];
+                if (img && img.arrayBuffer) {
+                    try {
+                        children.push(
+                            new docx.Paragraph({
+                                children: [
+                                    new docx.ImageRun({
+                                        data: img.arrayBuffer,
+                                        transformation: {
+                                            width: img.wordWidth,
+                                            height: img.wordHeight
+                                        }
+                                    })
+                                ],
+                                alignment: docx.AlignmentType.CENTER,
+                                spacing: { before: 160, after: 160 }
+                            })
+                        );
+                    } catch (imgErr) {
+                        console.warn('Lỗi nhúng ảnh:', img.placeholder, imgErr);
+                        children.push(new docx.Paragraph({
+                            children: [new docx.TextRun({ text: `[Hình ảnh: ${img.placeholder}]`, italics: true, color: '888888' })],
+                            alignment: docx.AlignmentType.CENTER
+                        }));
+                    }
                 }
                 continue;
             }
