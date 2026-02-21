@@ -434,9 +434,39 @@
             if (useAiMath && GeminiService.hasApiKey() && rawText.trim().length > 0) {
                 updateProgress(56, '🤖 Gemini AI đang xử lý công thức toán...');
                 try {
-                    lastProcessedText = await GeminiService.processMathFormulas(rawText, (pct, msg) => {
+                    // Bảo vệ [[IMG:...]] placeholder: rút ra trước khi gửi AI
+                    const imgPlaceholderMap = {};
+                    let aiInput = rawText;
+                    let placeholderIdx = 0;
+                    aiInput = aiInput.replace(/\[\[IMG:\d+:\d+\]\]/g, (match) => {
+                        const marker = `__GIỮ_ẢNH_${placeholderIdx}__`;
+                        imgPlaceholderMap[marker] = match;
+                        placeholderIdx++;
+                        return marker;
+                    });
+                    console.log(`🛡️ Bảo vệ ${placeholderIdx} placeholder ảnh trước khi gửi AI`);
+
+                    let aiOutput = await GeminiService.processMathFormulas(aiInput, (pct, msg) => {
                         updateProgress(56 + Math.round(pct * 0.42), msg);
                     });
+
+                    // Khôi phục placeholder ảnh
+                    for (const [marker, original] of Object.entries(imgPlaceholderMap)) {
+                        aiOutput = aiOutput.split(marker).join(original);
+                    }
+                    // Fallback: nếu AI vẫn xóa marker, chèn lại các placeholder bị mất ở cuối
+                    const missingPlaceholders = [];
+                    for (const [marker, original] of Object.entries(imgPlaceholderMap)) {
+                        if (!aiOutput.includes(original)) {
+                            missingPlaceholders.push(original);
+                        }
+                    }
+                    if (missingPlaceholders.length > 0) {
+                        console.warn(`⚠️ ${missingPlaceholders.length} placeholder ảnh bị AI xóa, khôi phục lại:`, missingPlaceholders);
+                        aiOutput += '\n' + missingPlaceholders.join('\n');
+                    }
+
+                    lastProcessedText = aiOutput;
                 } catch (aiError) {
                     console.error('AI error:', aiError);
                     lastProcessedText = rawText;
