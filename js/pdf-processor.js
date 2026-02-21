@@ -272,113 +272,76 @@ const PdfProcessor = (() => {
     }
 
     /**
-     * Convert Blob → ArrayBuffer (dùng cho docx ImageRun)
+     * Blob → Uint8Array (docx ImageRun cần Uint8Array)
      */
-    function blobToArrayBuffer(blob) {
+    function blobToUint8Array(blob) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
-            reader.onload = e => resolve(e.target.result);
+            reader.onload = e => resolve(new Uint8Array(e.target.result));
             reader.onerror = reject;
             reader.readAsArrayBuffer(blob);
         });
     }
 
     /**
-     * Extract tất cả hình ảnh từ PDF
-     * @param {File|ArrayBuffer} fileOrBuffer
-     * @param {Object} options
+     * PUBLIC: Extract tất cả hình ảnh từ PDF
+     * @param {File} file
      * @param {Function} onProgress
-     * @returns {Array} [{ pageNum, id, placeholder, blob, arrayBuffer, wordWidth, wordHeight, x, y }]
+     * @returns {Array} images[]
      */
-    async function extractImages(fileOrBuffer, options = {}, onProgress = null) {
+    async function extractImages(file, onProgress = null) {
         initPdfJs();
+        const SCALE = 2.5;
 
-        const {
-            scale = 2.5,
-            gridSize = 6,
-            minWidthPx = 60,
-            minHeightPx = 40,
-            minAreaRatio = 0.008,
-            paddingPx = 12,
-            whiteThreshold = 238
-        } = options;
-
-        const arrayBuffer = fileOrBuffer instanceof ArrayBuffer
-            ? fileOrBuffer
-            : await readFileAsArrayBuffer(fileOrBuffer);
-
-        // Clone buffer vì PDF.js sẽ detach nó
-        const pdfData = arrayBuffer.slice(0);
-        const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+        const arrayBuffer = await readFileAsArrayBuffer(file);
+        const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const pageCount = pdf.numPages;
         const allImages = [];
         let globalId = 0;
 
         for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
-            if (onProgress) {
-                onProgress(
-                    Math.round((pageNum / pageCount) * 100),
-                    `Đang phân tích hình ảnh trang ${pageNum}/${pageCount}...`
-                );
-            }
+            if (onProgress) onProgress(
+                Math.round((pageNum / pageCount) * 100),
+                `Phân tích hình ảnh trang ${pageNum}/${pageCount}...`
+            );
 
             try {
                 const page = await pdf.getPage(pageNum);
-
-                // Render trang ra canvas
-                const { canvas, viewport } = await renderPageToCanvas(page, scale);
-
-                // Lấy text boxes để loại trừ
+                const { canvas, viewport } = await renderPageToCanvas(page, SCALE);
                 const textContent = await page.getTextContent();
                 const textBoxes = getTextBoxes(textContent, viewport);
+                const regions = detectImageRegions(canvas, textBoxes);
 
-                // Phát hiện vùng ảnh
-                const regions = detectImageRegions(canvas, textBoxes, {
-                    gridSize,
-                    minWidthPx,
-                    minHeightPx,
-                    minAreaRatio,
-                    paddingPx,
-                    whiteThreshold
-                });
-
-                // Crop từng region
                 for (const region of regions) {
                     const blob = await cropCanvasRegion(canvas, region);
-                    if (!blob || blob.size < 500) continue; // bỏ qua blob quá nhỏ
+                    if (!blob || blob.size < 800) continue;
 
-                    const buffer = await blobToArrayBuffer(blob);
+                    const uint8 = await blobToUint8Array(blob);
                     globalId++;
 
-                    // Kích thước thực tế trong Word (pt) — chia scale để về kích thước gốc
-                    const wordWidth = Math.round(region.width / scale);
-                    const wordHeight = Math.round(region.height / scale);
+                    // Kích thước Word (px): chia scale về kích thước gốc, giới hạn tối đa
+                    const wPx = Math.min(Math.round(region.width / SCALE), 500);
+                    const hPx = Math.min(Math.round(region.height / SCALE), 650);
 
                     allImages.push({
                         pageNum,
                         id: globalId,
-                        placeholder: `[IMAGE_P${pageNum}_${globalId}]`,
-                        blob,
-                        arrayBuffer: buffer,
-                        // Kích thước cho Word (pixels → EMU: 1px ≈ 9525 EMU, nhưng docx.js dùng px)
-                        wordWidth: Math.min(wordWidth, 550),
-                        wordHeight: Math.min(wordHeight, 700),
-                        // Tọa độ gốc trên canvas (để debug)
-                        canvasX: region.x,
-                        canvasY: region.y,
-                        canvasWidth: region.width,
-                        canvasHeight: region.height
+                        placeholder: `[[IMG:${pageNum}:${globalId}]]`,
+                        data: uint8,          // Uint8Array cho docx
+                        width: wPx,
+                        height: hPx,
+                        // vị trí tương đối trên trang (0-1) để inject đúng chỗ
+                        relY: region.y / canvas.height
                     });
                 }
 
-                console.log(`📄 Trang ${pageNum}: phát hiện ${regions.length} vùng ảnh`);
-
-            } catch (err) {
-                console.warn(`⚠️ Lỗi extract ảnh trang ${pageNum}:`, err);
+                console.log(`📄 Trang ${pageNum}: ${regions.length} ảnh`);
+            } catch (e) {
+                console.warn(`Trang ${pageNum} lỗi:`, e);
             }
         }
 
-        console.log(`✅ Tổng cộng: ${allImages.length} hình ảnh từ ${pageCount} trang`);
+        console.log(`✅ Tổng: ${allImages.length} ảnh`);
         return allImages;
     }
 
@@ -622,7 +585,6 @@ const PdfProcessor = (() => {
         autoProcess,
         processBatch,
         extractImages,
-        blobToArrayBuffer,
         formatFileSize
     };
 })();

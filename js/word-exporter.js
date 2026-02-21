@@ -439,24 +439,21 @@ const WordExporter = (() => {
     }
 
     /**
-     * Export to Word WITH embedded images
-     * @param {string} content - Text with $...$ LaTeX + [IMAGE_Px_y] placeholders
-     * @param {Array} images - Array from PdfProcessor.extractImages()
+     * Export Word với hình ảnh nhúng đúng vị trí
+     * @param {string} content  - text có [[IMG:page:id]] placeholders
+     * @param {Array}  images   - từ PdfProcessor.extractImages()
      * @param {string} fileName
      * @param {Object} options
      */
     async function exportToWordWithImages(content, images = [], fileName = 'converted', options = {}) {
         const { fontSize = 24, fontName = 'Times New Roman' } = options;
 
-        // Build lookup map: placeholder → image data
-        const imageMap = {};
-        for (const img of images) {
-            imageMap[img.placeholder] = img;
-        }
+        // Build map: placeholder → image
+        const imgMap = {};
+        for (const img of images) imgMap[img.placeholder] = img;
 
         const children = [];
 
-        // Title paragraph
         children.push(
             new docx.Paragraph({
                 text: "TÀI LIỆU CHUYỂN ĐỔI TỪ PDF",
@@ -475,75 +472,88 @@ const WordExporter = (() => {
         let tableBuffer = [];
 
         for (let i = 0; i < lines.length; i++) {
-            const line = lines[i].trim();
+            const raw = lines[i];
+            const line = raw.trim();
 
-            // Table buffering
-            if (line.startsWith('|')) {
-                tableBuffer.push(lines[i]);
-                continue;
-            } else if (tableBuffer.length > 0) {
-                const table = parseMarkdownTable(tableBuffer);
-                if (table) children.push(table);
+            // Flush table buffer
+            if (!line.startsWith('|') && tableBuffer.length > 0) {
+                const tbl = parseMarkdownTable(tableBuffer);
+                if (tbl) children.push(tbl);
                 tableBuffer = [];
             }
 
-            // Check for image placeholder
-            const imagePlaceholderMatch = line.match(/^\[IMAGE_P(\d+)_(\d+)\]$/);
-            if (imagePlaceholderMatch) {
-                const placeholder = imagePlaceholderMatch[0];
-                const img = imageMap[placeholder];
-                if (img && img.arrayBuffer) {
+            if (line.startsWith('|')) { tableBuffer.push(raw); continue; }
+
+            // ── Image placeholder ──────────────────────────────
+            if (/^\[\[IMG:\d+:\d+\]\]$/.test(line)) {
+                const img = imgMap[line];
+                if (img && img.data && img.data.byteLength > 0) {
                     try {
                         children.push(
                             new docx.Paragraph({
                                 children: [
                                     new docx.ImageRun({
-                                        data: img.arrayBuffer,
+                                        data: img.data,          // Uint8Array
                                         transformation: {
-                                            width: img.wordWidth,
-                                            height: img.wordHeight
-                                        }
+                                            width: img.width,   // px
+                                            height: img.height   // px
+                                        },
+                                        type: 'png'
                                     })
                                 ],
                                 alignment: docx.AlignmentType.CENTER,
-                                spacing: { before: 160, after: 160 }
+                                spacing: { before: 200, after: 200 }
                             })
                         );
-                    } catch (imgErr) {
-                        console.warn('Lỗi nhúng ảnh:', img.placeholder, imgErr);
+                        console.log(`✅ Nhúng ảnh ${line} (${img.width}×${img.height}px)`);
+                    } catch (e) {
+                        console.error('Lỗi nhúng ảnh:', line, e);
                         children.push(new docx.Paragraph({
-                            children: [new docx.TextRun({ text: `[Hình ảnh: ${img.placeholder}]`, italics: true, color: '888888' })],
-                            alignment: docx.AlignmentType.CENTER
+                            children: [new docx.TextRun({
+                                text: `[Hình ảnh không thể nhúng: ${line}]`,
+                                italics: true, color: 'AA0000'
+                            })]
                         }));
                     }
                 }
                 continue;
             }
 
-            if (line) {
-                if (line.startsWith('### ')) {
-                    children.push(new docx.Paragraph({ text: line.replace('### ', ''), heading: docx.HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
-                } else if (line.startsWith('## ')) {
-                    children.push(new docx.Paragraph({ text: line.replace('## ', ''), heading: docx.HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
-                } else if (line.startsWith('# ')) {
-                    children.push(new docx.Paragraph({ text: line.replace('# ', ''), heading: docx.HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
-                } else if (line.match(/^---\s*Trang\s*\d+/i) || line === '---' || line === '========') {
-                    children.push(new docx.Paragraph({ children: [], pageBreakBefore: true }));
-                } else {
-                    children.push(new docx.Paragraph({
-                        children: parseMathInText(lines[i]),
-                        spacing: { after: 120, line: 360 },
-                        alignment: docx.AlignmentType.BOTH
-                    }));
-                }
+            // ── Headings ───────────────────────────────────────
+            if (line.startsWith('### ')) {
+                children.push(new docx.Paragraph({
+                    text: line.slice(4),
+                    heading: docx.HeadingLevel.HEADING_3,
+                    spacing: { before: 200, after: 100 }
+                }));
+            } else if (line.startsWith('## ')) {
+                children.push(new docx.Paragraph({
+                    text: line.slice(3),
+                    heading: docx.HeadingLevel.HEADING_2,
+                    spacing: { before: 240, after: 120 }
+                }));
+            } else if (line.startsWith('# ')) {
+                children.push(new docx.Paragraph({
+                    text: line.slice(2),
+                    heading: docx.HeadingLevel.HEADING_1,
+                    spacing: { before: 300, after: 150 }
+                }));
+            } else if (/^---\s*Trang\s*\d+/i.test(line) || line === '---' || line === '====') {
+                children.push(new docx.Paragraph({ children: [], pageBreakBefore: true }));
+            } else if (line) {
+                children.push(new docx.Paragraph({
+                    children: parseMathInText(raw),
+                    spacing: { after: 120, line: 360 },
+                    alignment: docx.AlignmentType.BOTH
+                }));
             } else {
-                children.push(new docx.Paragraph({ text: "" }));
+                children.push(new docx.Paragraph({ text: '' }));
             }
         }
 
         if (tableBuffer.length > 0) {
-            const table = parseMarkdownTable(tableBuffer);
-            if (table) children.push(table);
+            const tbl = parseMarkdownTable(tableBuffer);
+            if (tbl) children.push(tbl);
         }
 
         const doc = new docx.Document({
