@@ -508,15 +508,47 @@
                 currentPage = parseInt(sepMatch[1]);
                 result += chunk;
             } else {
-                // Chèn placeholders của trang currentPage vào đầu chunk này
+                // Chèn placeholders vào đúng vị trí dựa trên relY
                 const imgs = byPage[currentPage];
                 if (imgs && imgs.length > 0) {
-                    // Sort theo vị trí tương đối (relY) để chèn đúng thứ tự
-                    const placeholders = imgs
-                        .sort((a, b) => a.relY - b.relY)
-                        .map(img => img.placeholder)
-                        .join('\n');
-                    result += placeholders + '\n\n' + chunk;
+                    const lines = chunk.split('\n');
+                    // Đếm số dòng có nội dung (không trống) để map relY
+                    const nonEmptyIndices = [];
+                    for (let k = 0; k < lines.length; k++) {
+                        if (lines[k].trim()) nonEmptyIndices.push(k);
+                    }
+                    const totalNonEmpty = nonEmptyIndices.length || 1;
+
+                    const sorted = [...imgs].sort((a, b) => a.relY - b.relY);
+
+                    // Tính vị trí chèn (line index) cho mỗi ảnh
+                    const insertions = {}; // lineIdx → [placeholders]
+                    for (const img of sorted) {
+                        // relY (0→1) map sang vị trí dòng tương ứng
+                        let targetNonEmptyIdx = Math.round(img.relY * totalNonEmpty);
+                        targetNonEmptyIdx = Math.min(targetNonEmptyIdx, totalNonEmpty);
+
+                        // Chuyển từ non-empty index → real line index
+                        let realIdx;
+                        if (targetNonEmptyIdx >= totalNonEmpty) {
+                            realIdx = lines.length; // cuối chunk
+                        } else {
+                            realIdx = nonEmptyIndices[targetNonEmptyIdx] || 0;
+                        }
+
+                        if (!insertions[realIdx]) insertions[realIdx] = [];
+                        insertions[realIdx].push(img.placeholder);
+                    }
+
+                    // Rebuild chunk với placeholders chèn tại đúng vị trí
+                    const newLines = [];
+                    for (let k = 0; k <= lines.length; k++) {
+                        if (insertions[k]) {
+                            newLines.push(...insertions[k]);
+                        }
+                        if (k < lines.length) newLines.push(lines[k]);
+                    }
+                    result += newLines.join('\n');
                 } else {
                     result += chunk;
                 }
