@@ -317,6 +317,8 @@
             try {
                 showToast('Đang tạo file Word...', 'info');
                 const text = lastProcessedText || lastRawText;
+                console.log('📋 Export Word — extractedImages:', extractedImages.length,
+                    'text contains [[IMG:', text.includes('[[IMG:'));
                 let result;
 
                 if (extractedImages.length > 0) {
@@ -411,7 +413,12 @@
                     );
 
                     if (extractedImages.length > 0) {
+                        console.log('📸 Images extracted:', extractedImages.length,
+                            'Sample:', extractedImages[0].placeholder,
+                            'data size:', extractedImages[0].data?.byteLength || 0,
+                            'width:', extractedImages[0].width, 'height:', extractedImages[0].height);
                         rawText = injectImagePlaceholders(rawText, extractedImages);
+                        console.log('📝 After inject — text sample:', rawText.substring(0, 500));
                         lastRawText = rawText;
                         showAlert(`🖼️ Phát hiện ${extractedImages.length} hình ảnh — sẽ nhúng vào Word`, 'info');
                     } else {

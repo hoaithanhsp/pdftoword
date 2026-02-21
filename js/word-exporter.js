@@ -451,6 +451,9 @@ const WordExporter = (() => {
         // Build map: placeholder → image
         const imgMap = {};
         for (const img of images) imgMap[img.placeholder] = img;
+        console.log('🖼️ exportToWordWithImages — images:', images.length,
+            'imgMap keys:', Object.keys(imgMap),
+            'content has [[IMG:', content.includes('[[IMG:'));
 
         const children = [];
 

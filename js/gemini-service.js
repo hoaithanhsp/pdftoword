@@ -231,6 +231,7 @@ QUY TẮC:
    - Các đáp án A. B. C. D. giữ nguyên cấu trúc trắc nghiệm
 5. Giữ format Markdown (## heading, **bold**, danh sách)
 6. CHỈ trả về text đã sửa. KHÔNG giải thích.
+7. GIỮ NGUYÊN 100% các placeholder hình ảnh có dạng [[IMG:số:số]] — KHÔNG xóa, KHÔNG sửa, KHÔNG di chuyển chúng.
 
 VĂN BẢN:
 ${text}`;
