@@ -439,6 +439,128 @@ const WordExporter = (() => {
     }
 
     /**
+     * Export to Word WITH embedded images
+     * @param {string} content - Text with $...$ LaTeX + [IMAGE_PAGEx_y] placeholders
+     * @param {Array} pageImages - Array from PdfImageExtractor.extractPageImages()
+     * @param {string} fileName
+     * @param {Object} options
+     */
+    async function exportToWordWithImages(content, pageImages = [], fileName = 'converted', options = {}) {
+        const { fontSize = 24, fontName = 'Times New Roman' } = options;
+
+        // Pre-convert all image blobs to ArrayBuffer
+        const imageMap = {};
+        for (const img of pageImages) {
+            try {
+                imageMap[img.placeholder] = {
+                    data: await PdfImageExtractor.blobToArrayBuffer(img.imageBlob),
+                    width: Math.min(img.width / 2, 600),   // scale down for Word (px → pt approx)
+                    height: Math.min(img.height / 2, 400)
+                };
+            } catch (e) {
+                console.warn('Failed to convert image:', img.placeholder, e);
+            }
+        }
+
+        const children = [];
+
+        // Title paragraph
+        children.push(
+            new docx.Paragraph({
+                text: "TÀI LIỆU CHUYỂN ĐỔI TỪ PDF",
+                heading: docx.HeadingLevel.HEADING_1,
+                alignment: docx.AlignmentType.CENTER,
+                spacing: { after: 200 }
+            }),
+            new docx.Paragraph({
+                text: `Ngày tạo: ${new Date().toLocaleDateString("vi-VN")}`,
+                alignment: docx.AlignmentType.CENTER,
+                spacing: { after: 400 }
+            })
+        );
+
+        const lines = content.split('\n');
+        let tableBuffer = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+
+            // Table buffering
+            if (line.startsWith('|')) {
+                tableBuffer.push(lines[i]);
+                continue;
+            } else if (tableBuffer.length > 0) {
+                const table = parseMarkdownTable(tableBuffer);
+                if (table) children.push(table);
+                tableBuffer = [];
+            }
+
+            // Check for image placeholder
+            const imagePlaceholderMatch = line.match(/\[IMAGE_PAGE\d+_\d+\]/);
+            if (imagePlaceholderMatch) {
+                const placeholder = imagePlaceholderMatch[0];
+                const imgData = imageMap[placeholder];
+                if (imgData) {
+                    children.push(
+                        new docx.Paragraph({
+                            children: [
+                                new docx.ImageRun({
+                                    data: imgData.data,
+                                    transformation: {
+                                        width: imgData.width,
+                                        height: imgData.height
+                                    }
+                                })
+                            ],
+                            alignment: docx.AlignmentType.CENTER,
+                            spacing: { before: 200, after: 200 }
+                        })
+                    );
+                }
+                continue;
+            }
+
+            if (line) {
+                if (line.startsWith('### ')) {
+                    children.push(new docx.Paragraph({ text: line.replace('### ', ''), heading: docx.HeadingLevel.HEADING_3, spacing: { before: 200, after: 100 } }));
+                } else if (line.startsWith('## ')) {
+                    children.push(new docx.Paragraph({ text: line.replace('## ', ''), heading: docx.HeadingLevel.HEADING_2, spacing: { before: 240, after: 120 } }));
+                } else if (line.startsWith('# ')) {
+                    children.push(new docx.Paragraph({ text: line.replace('# ', ''), heading: docx.HeadingLevel.HEADING_1, spacing: { before: 300, after: 150 } }));
+                } else if (line.match(/^---\s*Trang\s*\d+/i) || line === '---' || line === '========') {
+                    children.push(new docx.Paragraph({ children: [], pageBreakBefore: true }));
+                } else {
+                    children.push(new docx.Paragraph({
+                        children: parseMathInText(lines[i]),
+                        spacing: { after: 120, line: 360 },
+                        alignment: docx.AlignmentType.BOTH
+                    }));
+                }
+            } else {
+                children.push(new docx.Paragraph({ text: "" }));
+            }
+        }
+
+        if (tableBuffer.length > 0) {
+            const table = parseMarkdownTable(tableBuffer);
+            if (table) children.push(table);
+        }
+
+        const doc = new docx.Document({
+            sections: [{ properties: {}, children }],
+            styles: {
+                default: {
+                    document: { run: { font: fontName, size: fontSize } }
+                }
+            }
+        });
+
+        const blob = await docx.Packer.toBlob(doc);
+        saveAs(blob, `${fileName}.docx`);
+        return { success: true, fileName: `${fileName}.docx` };
+    }
+
+    /**
      * Download text as TXT file
      */
     function downloadAsTxt(text, fileName = 'converted') {
@@ -484,6 +606,7 @@ const WordExporter = (() => {
     return {
         exportToWord,
         exportBatch,
+        exportToWordWithImages,
         downloadAsTxt,
         copyToClipboard,
         // Expose for testing

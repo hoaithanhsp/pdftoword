@@ -14,6 +14,7 @@
     let lastResults = null;
     let lastProcessedText = ''; // Text after AI processing
     let lastRawText = '';       // Raw text before AI
+    let extractedImages = [];   // Array of page images extracted from PDF
 
     // ========================================
     // DOM HELPERS
@@ -316,10 +317,20 @@
             try {
                 showToast('Đang tạo file Word...', 'info');
                 const text = lastProcessedText || lastRawText;
-                const result = await WordExporter.exportToWord(text, getFileName(), {
-                    fontSize: 24,
-                    fontName: 'Times New Roman'
-                });
+
+                let result;
+                if (extractedImages && extractedImages.length > 0) {
+                    result = await WordExporter.exportToWordWithImages(text, extractedImages, getFileName(), {
+                        fontSize: 24,
+                        fontName: 'Times New Roman'
+                    });
+                } else {
+                    result = await WordExporter.exportToWord(text, getFileName(), {
+                        fontSize: 24,
+                        fontName: 'Times New Roman'
+                    });
+                }
+
                 if (result.success) {
                     showToast(`Đã tải ${result.fileName}!`, 'success');
                 }
@@ -384,6 +395,28 @@
                 rawText = results.map(r => r.text || '').join('\n\n========\n\n');
             }
 
+            // Image Extraction Phase
+            extractedImages = [];
+            const keepImages = $('#keepImagesToggle')?.checked ?? true;
+            if (keepImages && selectedFiles.length === 1) {
+                updateProgress(45, '🖼️ Đang trích xuất hình ảnh từ PDF...');
+                try {
+                    const pdfData = await selectedFiles[0].arrayBuffer();
+                    extractedImages = await PdfImageExtractor.extractPageImages(pdfData, {
+                        scale: 2.0,
+                        minAreaRatio: 0.015
+                    });
+
+                    // Inject placeholders into rawText
+                    if (extractedImages.length > 0) {
+                        rawText = injectImagePlaceholders(rawText, extractedImages);
+                        showAlert(`🖼️ Phát hiện ${extractedImages.length} hình ảnh/đồ thị`, 'info');
+                    }
+                } catch (imgErr) {
+                    console.warn('Image extraction failed:', imgErr);
+                }
+            }
+
             lastRawText = rawText;
 
             // Phase 2: AI Math Processing (if enabled & has API key)
@@ -441,6 +474,30 @@
             updateProcessButton();
             progressContainer.classList.remove('active');
         }
+    }
+
+    // Helper: inject image placeholders into text by page
+    function injectImagePlaceholders(text, images) {
+        // Group images by page
+        const byPage = {};
+        images.forEach(img => {
+            if (!byPage[img.pageNum]) byPage[img.pageNum] = [];
+            byPage[img.pageNum].push(img);
+        });
+
+        // Insert placeholders after page separator markers
+        let result = text;
+        Object.entries(byPage).forEach(([pageNum, imgs]) => {
+            const pageSep = new RegExp(`(---\\s*Trang\\s*${pageNum}[^\\n]*)`, 'i');
+            const placeholders = imgs.map(img => img.placeholder).join('\n');
+            if (pageSep.test(result)) {
+                result = result.replace(pageSep, `$1\n${placeholders}`);
+            } else {
+                // Append at end if no separator found
+                result += `\n${placeholders}`;
+            }
+        });
+        return result;
     }
 
     // ========================================
