@@ -417,7 +417,7 @@
                             'Sample:', extractedImages[0].placeholder,
                             'data size:', extractedImages[0].data?.byteLength || 0,
                             'width:', extractedImages[0].width, 'height:', extractedImages[0].height);
-                        rawText = injectImagePlaceholders(rawText, extractedImages);
+                        rawText = injectImagePlaceholders(rawText, extractedImages, lastResults?.pages);
                         console.log('📝 After inject — text sample:', rawText.substring(0, 500));
                         lastRawText = rawText;
                         showAlert(`🖼️ Phát hiện ${extractedImages.length} hình ảnh — sẽ nhúng vào Word`, 'info');
@@ -434,27 +434,32 @@
             if (useAiMath && GeminiService.hasApiKey() && rawText.trim().length > 0) {
                 updateProgress(56, '🤖 Gemini AI đang xử lý công thức toán...');
                 try {
-                    // Bảo vệ [[IMG:...]] placeholder: rút ra trước khi gửi AI
+                    // Bảo vệ [[IMG:...]] placeholder: dùng HTML comment marker (AI luôn giữ nguyên)
                     const imgPlaceholderMap = {};
                     let aiInput = rawText;
                     let placeholderIdx = 0;
                     aiInput = aiInput.replace(/\[\[IMG:\d+:\d+\]\]/g, (match) => {
-                        const marker = `__GIỮ_ẢNH_${placeholderIdx}__`;
+                        const marker = `<!--IMGPH_${placeholderIdx}-->`;
                         imgPlaceholderMap[marker] = match;
                         placeholderIdx++;
                         return marker;
                     });
-                    console.log(`🛡️ Bảo vệ ${placeholderIdx} placeholder ảnh trước khi gửi AI`);
+                    console.log(`🛡️ Bảo vệ ${placeholderIdx} placeholder ảnh (HTML comment markers)`);
 
                     let aiOutput = await GeminiService.processMathFormulas(aiInput, (pct, msg) => {
                         updateProgress(56 + Math.round(pct * 0.42), msg);
                     });
 
+                    // Debug: kiểm tra marker tồn tại sau AI
+                    const markersInOutput = (aiOutput.match(/<!--IMGPH_\d+-->/g) || []).length;
+                    console.log(`🔍 Sau AI: ${markersInOutput}/${placeholderIdx} markers còn lại`);
+
                     // Khôi phục placeholder ảnh
                     for (const [marker, original] of Object.entries(imgPlaceholderMap)) {
                         aiOutput = aiOutput.split(marker).join(original);
                     }
-                    // Fallback: nếu AI vẫn xóa marker, chèn lại các placeholder bị mất ở cuối
+
+                    // Fallback: nếu AI xóa marker, chèn lại placeholder bị mất (mỗi cái trên 1 dòng riêng)
                     const missingPlaceholders = [];
                     for (const [marker, original] of Object.entries(imgPlaceholderMap)) {
                         if (!aiOutput.includes(original)) {
@@ -462,9 +467,13 @@
                         }
                     }
                     if (missingPlaceholders.length > 0) {
-                        console.warn(`⚠️ ${missingPlaceholders.length} placeholder ảnh bị AI xóa, khôi phục lại:`, missingPlaceholders);
+                        console.warn(`⚠️ ${missingPlaceholders.length} placeholder bị mất, khôi phục:`, missingPlaceholders);
                         aiOutput += '\n' + missingPlaceholders.join('\n');
                     }
+
+                    // Debug: đếm placeholder cuối cùng
+                    const finalCount = (aiOutput.match(/\[\[IMG:\d+:\d+\]\]/g) || []).length;
+                    console.log(`✅ Kết quả cuối: ${finalCount}/${placeholderIdx} placeholder ảnh`)
 
                     lastProcessedText = aiOutput;
                 } catch (aiError) {
@@ -513,7 +522,8 @@
     }
 
     // Helper: Inject image placeholders vào đúng vị trí trong text
-    function injectImagePlaceholders(text, images) {
+    // Dùng tọa độ Y thực từ extractText để so khớp chính xác với relY của ảnh
+    function injectImagePlaceholders(text, images, pages) {
         if (!images || images.length === 0) return text;
 
         // Group images by page
@@ -523,10 +533,15 @@
             byPage[img.pageNum].push(img);
         }
 
-        const pageTexts = text.split(/(\n\n---\s*Trang\s*\d+\s*---\n\n)/i);
-        // pageTexts[0] = trang 1, sau đó xen kẽ separator + nội dung
+        // Build map: pageNumber → lineYPositions
+        const pageYMap = {};
+        if (pages) {
+            for (const p of pages) {
+                pageYMap[p.pageNumber] = p.lineYPositions || [];
+            }
+        }
 
-        // Rebuild với placeholders chèn vào đầu mỗi trang
+        const pageTexts = text.split(/(\n\n---\s*Trang\s*\d+\s*---\n\n)/i);
         let result = '';
         let currentPage = 1;
 
@@ -538,36 +553,51 @@
                 currentPage = parseInt(sepMatch[1]);
                 result += chunk;
             } else {
-                // Chèn placeholders vào đúng vị trí dựa trên relY
                 const imgs = byPage[currentPage];
                 if (imgs && imgs.length > 0) {
                     const lines = chunk.split('\n');
-                    // Đếm số dòng có nội dung (không trống) để map relY
                     const nonEmptyIndices = [];
                     for (let k = 0; k < lines.length; k++) {
                         if (lines[k].trim()) nonEmptyIndices.push(k);
                     }
-                    const totalNonEmpty = nonEmptyIndices.length || 1;
 
+                    const lineYPos = pageYMap[currentPage] || [];
                     const sorted = [...imgs].sort((a, b) => a.relY - b.relY);
-
-                    // Tính vị trí chèn (line index) cho mỗi ảnh
                     const insertions = {}; // lineIdx → [placeholders]
-                    for (const img of sorted) {
-                        // relY (0→1) map sang vị trí dòng tương ứng
-                        let targetNonEmptyIdx = Math.round(img.relY * totalNonEmpty);
-                        targetNonEmptyIdx = Math.min(targetNonEmptyIdx, totalNonEmpty);
 
-                        // Chuyển từ non-empty index → real line index
-                        let realIdx;
-                        if (targetNonEmptyIdx >= totalNonEmpty) {
-                            realIdx = lines.length; // cuối chunk
+                    for (const img of sorted) {
+                        let bestLineIdx = lines.length; // mặc định: cuối chunk
+
+                        if (lineYPos.length > 0 && nonEmptyIndices.length > 0) {
+                            // So sánh trực tiếp tọa độ Y thực
+                            // Tìm dòng text cuối cùng nằm TRÊN hoặc NGANG ảnh
+                            let insertAfterK = -1;
+                            const len = Math.min(lineYPos.length, nonEmptyIndices.length);
+                            for (let k = 0; k < len; k++) {
+                                if (lineYPos[k] <= img.relY + 0.01) {
+                                    insertAfterK = k;
+                                }
+                            }
+
+                            if (insertAfterK >= 0) {
+                                // Chèn SAU dòng text cuối cùng nằm trên ảnh
+                                bestLineIdx = nonEmptyIndices[insertAfterK] + 1;
+                            } else {
+                                // Ảnh ở trên tất cả text → chèn ở đầu
+                                bestLineIdx = 0;
+                            }
                         } else {
-                            realIdx = nonEmptyIndices[targetNonEmptyIdx] || 0;
+                            // Fallback: mapping tỷ lệ (khi không có Y metadata)
+                            const totalNonEmpty = nonEmptyIndices.length || 1;
+                            let targetIdx = Math.round(img.relY * totalNonEmpty);
+                            targetIdx = Math.min(targetIdx, totalNonEmpty);
+                            bestLineIdx = targetIdx < nonEmptyIndices.length
+                                ? nonEmptyIndices[targetIdx]
+                                : lines.length;
                         }
 
-                        if (!insertions[realIdx]) insertions[realIdx] = [];
-                        insertions[realIdx].push(img.placeholder);
+                        if (!insertions[bestLineIdx]) insertions[bestLineIdx] = [];
+                        insertions[bestLineIdx].push(img.placeholder);
                     }
 
                     // Rebuild chunk với placeholders chèn tại đúng vị trí

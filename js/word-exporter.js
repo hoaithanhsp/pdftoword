@@ -488,8 +488,10 @@ const WordExporter = (() => {
             if (line.startsWith('|')) { tableBuffer.push(raw); continue; }
 
             // ── Image placeholder ──────────────────────────────
-            if (/^\[\[IMG:\d+:\d+\]\]$/.test(line)) {
-                const img = imgMap[line];
+            const imgMatch = line.match(/\[\[IMG:(\d+):(\d+)\]\]/);
+            if (imgMatch) {
+                const placeholder = imgMatch[0];
+                const img = imgMap[placeholder];
                 if (img && img.data && img.data.byteLength > 0) {
                     try {
                         children.push(
@@ -508,16 +510,18 @@ const WordExporter = (() => {
                                 spacing: { before: 200, after: 200 }
                             })
                         );
-                        console.log(`✅ Nhúng ảnh ${line} (${img.width}×${img.height}px)`);
+                        console.log(`✅ Nhúng ảnh ${placeholder} (${img.width}×${img.height}px)`);
                     } catch (e) {
-                        console.error('Lỗi nhúng ảnh:', line, e);
+                        console.error('Lỗi nhúng ảnh:', placeholder, e);
                         children.push(new docx.Paragraph({
                             children: [new docx.TextRun({
-                                text: `[Hình ảnh không thể nhúng: ${line}]`,
+                                text: `[Hình ảnh không thể nhúng: ${placeholder}]`,
                                 italics: true, color: 'AA0000'
                             })]
                         }));
                     }
+                } else {
+                    console.warn(`⚠️ Placeholder ${placeholder} không khớp imgMap. Keys:`, Object.keys(imgMap));
                 }
                 continue;
             }

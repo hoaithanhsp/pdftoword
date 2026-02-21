@@ -364,10 +364,14 @@ const PdfProcessor = (() => {
         for (let i = 1; i <= pageCount; i++) {
             const page = await pdf.getPage(i);
             const textContent = await page.getTextContent();
+            const viewport = page.getViewport({ scale: 1.0 });
+            const pageHeight = viewport.height;
 
             // Xây dựng text từ các text items, giữ thứ tự & vị trí
             let pageText = '';
             let lastY = null;
+            const lineYPositions = []; // normalized Y cho mỗi dòng (0=top, 1=bottom)
+            let currentLineY = null;   // PDF Y coordinate của dòng hiện tại
 
             for (const item of textContent.items) {
                 if (item.str === undefined) continue;
@@ -377,11 +381,21 @@ const PdfProcessor = (() => {
                 // Xuống dòng mới nếu vị trí y thay đổi đáng kể
                 if (lastY !== null && y !== null && Math.abs(lastY - y) > 5) {
                     pageText += '\n';
+                    // Lưu Y position của dòng vừa kết thúc (chuyển từ PDF bottom-up → top-down normalized)
+                    if (currentLineY !== null) {
+                        lineYPositions.push(1 - (currentLineY / pageHeight));
+                    }
+                    currentLineY = y;
                 } else if (lastY !== null && pageText.length > 0 && !pageText.endsWith('\n')) {
                     // Thêm space giữa các items cùng dòng
                     if (item.str.trim()) {
                         pageText += ' ';
                     }
+                }
+
+                // Bắt đầu dòng đầu tiên
+                if (currentLineY === null && y !== null) {
+                    currentLineY = y;
                 }
 
                 pageText += item.str;
@@ -392,9 +406,15 @@ const PdfProcessor = (() => {
                 }
             }
 
+            // Lưu Y position của dòng cuối cùng
+            if (currentLineY !== null) {
+                lineYPositions.push(1 - (currentLineY / pageHeight));
+            }
+
             pages.push({
                 pageNumber: i,
-                text: pageText.trim()
+                text: pageText.trim(),
+                lineYPositions
             });
 
             fullText += (i > 1 ? '\n\n--- Trang ' + i + ' ---\n\n' : '') + pageText.trim();
